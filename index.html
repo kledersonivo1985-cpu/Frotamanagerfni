@@ -13936,6 +13936,55 @@ ALTER TABLE equipamentos
     }, 3000);
   }
 }
+// ═══════════════════════════════════════════════
+//  ITENS DA OS — fonte única para Visualizar e Imprimir (2ª via)
+//  Lê os.itens (todos, sem filtrar por status) + status_exec/data_exec/responsavel_exec.
+// ═══════════════════════════════════════════════
+const _OS_ITEM_ST = {
+  pendente:      {label:'Pendente',     cor:'#616161', bg:'#eeeeee'},
+  parcial:       {label:'Em execução',  cor:'#e65100', bg:'#fff3e0'},
+  executado:     {label:'Executado',    cor:'#2e7d32', bg:'#e8f5e9'},
+  nao_executado: {label:'Cancelado',    cor:'#c62828', bg:'#ffebee'}
+};
+function _osItemStatusKey(it){
+  const k = it && it.status_exec;
+  return _OS_ITEM_ST[k] ? k : 'pendente';
+}
+function _osItensDetalhados(os){
+  const lista = Array.isArray(os && os.itens) ? os.itens : [];
+  return lista.map((it,ii)=>{
+    const key = _osItemStatusKey(it);
+    const st = _OS_ITEM_ST[key];
+    return {
+      n: ii+1, key, label: st.label, cor: st.cor, bg: st.bg,
+      tipo: it.tipo||'peca', descricao: it.descricao||'', referencia: it.referencia||'',
+      quantidade: it.quantidade||1, unidade: it.unidade||'un',
+      futura: !!it.futura,
+      data: key==='executado' ? (it.data_exec||'') : '',
+      responsavel: key==='executado' ? (it.responsavel_exec||'') : '',
+      obs: it.obs||''
+    };
+  });
+}
+function _osItensResumo(os){
+  const r = {total:0, pendente:0, parcial:0, executado:0, nao_executado:0};
+  _osItensDetalhados(os).forEach(x=>{ r.total++; r[x.key]++; });
+  return r;
+}
+function _osItensResumoTexto(os){
+  const r = _osItensResumo(os);
+  if(!r.total) return '';
+  const p = [];
+  if(r.executado) p.push(r.executado+' executado(s)');
+  if(r.parcial) p.push(r.parcial+' em execução');
+  if(r.pendente) p.push(r.pendente+' pendente(s)');
+  if(r.nao_executado) p.push(r.nao_executado+' cancelado(s)');
+  return r.total+' item(s): '+p.join(', ');
+}
+function _osItemBadgeHtml(x, print){
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:${print?'9px':'10px'};font-weight:800;white-space:nowrap;background:${x.bg};color:${x.cor};-webkit-print-color-adjust:exact;print-color-adjust:exact">${x.label.toUpperCase()}</span>`;
+}
+
 function verOS(i){
   const os=db.ordens_servico[i];
   const sb={aberta:'bi',em_andamento:'bw',concluida:'bs',cancelada:'bd'};
@@ -13986,18 +14035,22 @@ function verOS(i){
     ${os.remonta_obs?`<div style="font-size:12px;margin-top:6px;color:#334155"><strong>Obs:</strong> ${esc(os.remonta_obs||"")}</div>`:''}
   </div>` })() : ''}
   ${(os.itens||[]).length>0?`
-  <div class="sec-title"><i class="fas fa-box"></i> Itens / Peças (${os.itens.length})</div>
+  <div class="sec-title"><i class="fas fa-box"></i> Itens / Serviços (${os.itens.length})</div>
+  <div style="font-size:12px;color:var(--text2);margin-bottom:6px">${_osItensResumoTexto(os)}</div>
   <div class="tbl-wrap"><table>
-    <thead><tr><th>Tipo</th><th>Descrição</th><th>Referência</th><th>Qtd</th><th>Un</th><th>Obs</th><th>Situação</th></tr></thead>
+    <thead><tr><th>Tipo</th><th>Descrição</th><th>Referência</th><th>Qtd</th><th>Un</th><th>Status</th><th>Data execução</th><th>Responsável</th><th>Obs</th><th>Situação</th></tr></thead>
     <tbody>
-    ${os.itens.map(it=>`<tr>
-      <td><span class="badge bp" style="font-size:9px">${it.tipo||'peca'}</span></td>
-      <td><strong>${esc(it.descricao||"")}</strong></td>
-      <td>${it.referencia||'—'}</td>
-      <td>${it.quantidade||1}</td>
-      <td>${it.unidade||'un'}</td>
-      <td>${it.obs||'—'}</td>
-      <td>${it.futura?'<span class="badge bw">Futura</span>':'<span class="badge bs">Esta OS</span>'}</td>
+    ${_osItensDetalhados(os).map(x=>`<tr>
+      <td><span class="badge bp" style="font-size:9px">${esc(x.tipo)}</span></td>
+      <td><strong>${esc(x.descricao)}</strong></td>
+      <td>${esc(x.referencia)||'—'}</td>
+      <td>${x.quantidade}</td>
+      <td>${esc(x.unidade)}</td>
+      <td>${_osItemBadgeHtml(x,false)}</td>
+      <td>${x.data?fmtDt(x.data):'—'}</td>
+      <td>${esc(x.responsavel)||'—'}</td>
+      <td>${esc(x.obs)||'—'}</td>
+      <td>${x.futura?'<span class="badge bw">Futura</span>':'<span class="badge bs">Esta OS</span>'}</td>
     </tr>`).join('')}
     </tbody>
   </table></div>`:''}
@@ -14334,7 +14387,13 @@ function salvarEdicaoOS(i){
     const get = f => row.querySelector(`[data-field="${f}"]`);
     const desc = get('descricao')?.value?.trim();
     if(!desc) return;
+    const orig = row.dataset.iidx!==undefined ? (os.itens||[])[parseInt(row.dataset.iidx)] : null;
+    const stNovo = get('status_exec')?.value||'pendente';
+    const execJa = orig && orig.status_exec==='executado';
     novosItens.push({
+      ...(orig||{}),
+      data_exec: stNovo==='executado' ? (execJa && orig.data_exec ? orig.data_exec : today()) : (orig?.data_exec||null),
+      responsavel_exec: stNovo==='executado' ? (execJa && orig.responsavel_exec ? orig.responsavel_exec : (os.mecanico_os||document.getElementById('edt_mecanico')?.value||currentUser?.nome||'')) : (orig?.responsavel_exec||null),
       descricao: desc,
       referencia: get('referencia')?.value||'',
       quantidade: parseFloat(get('quantidade')?.value)||1,
@@ -34266,17 +34325,17 @@ function imprimirOS(i){
 
   <!-- ITENS / SERVIÇOS -->
   <div class="section">
-    <div class="sec-hdr" style="background:#00695c">▌ Itens / Serviços da OS ${(os.itens&&os.itens.length>0)?'('+os.itens.length+' item(s)':''}</div>
+    <div class="sec-hdr" style="background:#00695c">▌ Itens / Serviços da OS ${(os.itens&&os.itens.length>0)?'— '+_osItensResumoTexto(os):''} <span style="font-weight:400;text-transform:none">(situação em ${hoje} ${hora})</span></div>
     <div class="sec-body" style="padding:0">
       <table>
-        <thead><tr><th style="width:30px">Nº</th><th style="width:70px">Tipo</th><th>Descrição do Item / Serviço</th><th style="width:80px">Referência</th><th style="width:50px">Qtd</th><th style="width:40px">Un</th><th>Observações</th></tr></thead>
+        <thead><tr><th style="width:26px">Nº</th><th style="width:52px">Tipo</th><th>Descrição do Item / Serviço</th><th style="width:70px">Referência</th><th style="width:36px">Qtd</th><th style="width:32px">Un</th><th style="width:78px">Status</th><th style="width:62px">Data exec.</th><th style="width:80px">Responsável</th><th>Observações</th></tr></thead>
         <tbody>
         ${(()=>{
-          // Total de linhas = o informado no prompt (itens + em branco), nunca menos que os itens.
-          const itensOS = os.itens||[];
+          // Todos os itens persistidos (qualquer status) + linhas em branco até o total informado no prompt.
+          const itensOS = _osItensDetalhados(os);
           const total = Math.max(_linhasImprimir, itensOS.length);
-          let rows = itensOS.map((it,ii)=>`<tr><td>${ii+1}</td><td style="font-size:9px">${it.tipo||'peca'}</td><td><strong>${esc(it.descricao||"")}</strong></td><td>${it.referencia||'—'}</td><td>${it.quantidade||1}</td><td>${it.unidade||'un'}</td><td>${it.obs||''}</td></tr>`).join('');
-          for(let n=itensOS.length+1; n<=total; n++) rows += `<tr><td>${n}</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`;
+          let rows = itensOS.map(x=>`<tr${x.key==='executado'?' style="background:#f1f8f2;-webkit-print-color-adjust:exact;print-color-adjust:exact"':''}><td>${x.n}</td><td style="font-size:9px">${esc(x.tipo)}</td><td><strong>${esc(x.descricao)}</strong></td><td>${esc(x.referencia)||'—'}</td><td>${x.quantidade}</td><td>${esc(x.unidade)}</td><td>${_osItemBadgeHtml(x,true)}</td><td>${x.data?fmtDt(x.data):'—'}</td><td>${esc(x.responsavel)||'—'}</td><td>${esc(x.obs)}</td></tr>`).join('');
+          for(let n=itensOS.length+1; n<=total; n++) rows += `<tr><td>${n}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`;
           return rows;
         })()}
         </tbody>
